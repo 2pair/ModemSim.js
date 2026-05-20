@@ -1,0 +1,21 @@
+{
+    "github.copilot.chat.agentDebugLog.fileLogging.enabled": true,
+  "[javascript]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  "[typescript]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode",
+    "editor.formatOnSave": true
+  },
+  "cSpell.words": [
+    "Butterworth",
+    "Desynced",
+    "dialup",
+    "freqs",
+    "Piezo",
+    "postamble",
+    "wideband"
+  ],
+  "makefile.configureOnOpen": false
+}
+

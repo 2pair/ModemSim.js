@@ -1,0 +1,30 @@
+{
+  "name": "56kb",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "lint": "eslint .",
+    "build": "esbuild src/index.ts --bundle --outdir=dist --loader:.svg=dataurl --loader:.gif=dataurl --minify && npx shx cp public/index.html dist/",
+    "dev": "esbuild src/index.ts --bundle --outdir=dist --loader:.svg=dataurl --loader:.gif=dataurl --sourcemap --watch",
+    "start": "http-server dist -p 8080 -o -c 1 -g -e html",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@typescript-eslint/eslint-plugin": "8.59.3",
+    "@typescript-eslint/parser": "8.59.3",
+    "esbuild": "0.28.0",
+    "eslint": "10.3.0",
+    "http-server": "14.1.1",
+    "shx": "0.3.4",
+    "typescript": "6.0.3"
+  },
+  "dependencies": {
+    "fft.js": "^4.0.4"
+  }
+}
