@@ -4,23 +4,37 @@ export interface AudioFilter {
 }
 
 /**
+ * Converts a linear magnitude value to decibels for biquad filter gain` parameters.
+ *
+ * The Web Audio API's biquad filters use a Q parameter that is logarithmic in nature.
+ * This function converts a linear magnitude (e.g., 0.7071 for Butterworth Q value)
+ * to the corresponding dB value.
+ * @param mag The linear magnitude value to convert (e.g., 0.7071).
+ * @returns The corresponding magnitude value in decibels for use in biquad filters.
+ */
+export function magnitudeToDb(mag: number): number {
+  return 20 * Math.log10(mag);
+}
+
+/**
  * 4th-Order Butterworth Bandpass Filter.
  */
 export class TelephoneLineFilter implements AudioFilter {
   public input: GainNode;
   public output: GainNode;
 
-  constructor(ctx: AudioContext) {
-    const q1 = 0.541196; // Q for 1st stage of Butterworth
-    const q2 = 1.306563; // Q for 2nd stage of Butterworth
-    //const hpCutoff = 400;
+  constructor(ctx: BaseAudioContext) {
+    // Web audio biquads expect Q values in dB for LP and HP filters
+    const q1 = magnitudeToDb(0.541196); // 1st Butterworth stage
+    const q2 = magnitudeToDb(1.306563); // 2nd Butterworth stage
+    const hpCutoff = 400;
     const lpCutoff = 3400;
 
     this.input = ctx.createGain();
     this.output = ctx.createGain();
 
     // 4th-order Highpass
-    /*const hp1 = ctx.createBiquadFilter();
+    const hp1 = ctx.createBiquadFilter();
     hp1.type = "highpass";
     hp1.frequency.value = hpCutoff;
     hp1.Q.value = q1;
@@ -30,14 +44,14 @@ export class TelephoneLineFilter implements AudioFilter {
     hp2.frequency.value = hpCutoff;
     hp2.Q.value = q2;
     hp1.connect(hp2);
-    */
+
     // 4th-order Lowpass
     const lp1 = ctx.createBiquadFilter();
     lp1.type = "lowpass";
     lp1.frequency.value = lpCutoff;
     lp1.Q.value = q1;
-    this.input.connect(lp1);
-    //hp2.connect(lp1);
+    //this.input.connect(lp1);
+    hp2.connect(lp1);
     const lp2 = ctx.createBiquadFilter();
     lp2.type = "lowpass";
     lp2.frequency.value = lpCutoff;
@@ -56,29 +70,36 @@ export class SpeakerFilter implements AudioFilter {
   public input: GainNode;
   public output: GainNode;
 
-  constructor(ctx: AudioContext) {
+  constructor(ctx: BaseAudioContext) {
     this.input = ctx.createGain();
     this.output = ctx.createGain();
     // Aggressive low-end acoustic roll-off
     const hp = ctx.createBiquadFilter();
     hp.type = "highpass";
-    hp.frequency.value = 50;
-    hp.Q.value = 0.7071;
+    hp.frequency.value = 100;
+    hp.Q.value = magnitudeToDb(0.7071);
     this.input.connect(hp);
+
+    //gradual low-end roll-off (uncomment if you want a more extreme "tiny speaker" effect)
+    const hp2 = ctx.createBiquadFilter();
+    hp2.type = "highpass";
+    hp2.frequency.value = 800;
+    hp2.Q.value = magnitudeToDb(0.75);
+    hp.connect(hp2);
 
     // Sharp midrange resonant peak
     const peaking = ctx.createBiquadFilter();
     peaking.type = "peaking";
     peaking.frequency.value = 1500;
-    peaking.Q.value = 1.5;
+    peaking.Q.value = magnitudeToDb(1.3);
     peaking.gain.value = 4;
-    hp.connect(peaking);
+    hp2.connect(peaking);
 
     // High-frequency acoustic smoothing
     const lp = ctx.createBiquadFilter();
     lp.type = "lowpass";
     lp.frequency.value = 5000;
-    lp.Q.value = 0.7071;
+    lp.Q.value = magnitudeToDb(0.7071);
     peaking.connect(lp);
     lp.connect(this.output);
   }
@@ -95,7 +116,7 @@ export class SoftSaturationShaper implements AudioFilter {
   private shaper: WaveShaperNode;
 
   // Higher value equals more distortion/rounding
-  constructor(ctx: AudioContext, drive: number) {
+  constructor(ctx: BaseAudioContext, drive: number) {
     this.input = ctx.createGain();
     this.output = ctx.createGain();
     this.driveGain = ctx.createGain();
@@ -114,7 +135,7 @@ export class SoftSaturationShaper implements AudioFilter {
   /**
    * Updates the drive curve and balances the internal volume stages.
    */
-  public updateDrive(ctx: AudioContext, drive: number): void {
+  public updateDrive(ctx: BaseAudioContext, drive: number): void {
     // Prevent divide-by-zero errors if drive is exactly 0
     drive = drive ? drive : 0.01;
 
@@ -139,7 +160,7 @@ export class FullModemFilter implements AudioFilter {
   public input: GainNode;
   public output: GainNode;
 
-  constructor(ctx: AudioContext) {
+  constructor(ctx: BaseAudioContext) {
     this.input = ctx.createGain();
     this.output = ctx.createGain();
     this.input.gain.value = 1.0;
@@ -147,11 +168,106 @@ export class FullModemFilter implements AudioFilter {
 
     const speakerFilter = new SpeakerFilter(ctx);
     const phoneFilter = new TelephoneLineFilter(ctx);
-    const saturationFilter = new SoftSaturationShaper(ctx, 1.5);
+    const saturationFilter = new SoftSaturationShaper(ctx, 0.75);
 
     this.input.connect(saturationFilter.input);
     saturationFilter.output.connect(phoneFilter.input);
     phoneFilter.output.connect(speakerFilter.input);
     speakerFilter.output.connect(this.output);
+  }
+}
+
+export class FrequencyShaper {
+  public input: GainNode;
+  public output: GainNode;
+
+  private context: BaseAudioContext;
+  private filters: BiquadFilterNode[] = [];
+
+  constructor(context: BaseAudioContext) {
+    this.context = context;
+
+    // We use dummy GainNodes at the ends so you can safely connect/disconnect
+    // the shaper from other stages without worrying about the internal chain.
+    this.input = this.context.createGain();
+    this.output = this.context.createGain();
+
+    // Default state: bypass (input goes straight to output)
+    this.input.connect(this.output);
+  }
+
+  /**
+   * Applies the EQ curve to the audio stream.
+   * @param eqValues Array of numbers from -1 (cut) to 1 (boost).
+   * @param minFreq The lowest frequency in the range (e.g., 20 Hz).
+   * @param maxFreq The highest frequency in the range (e.g., 20000 Hz).
+   * @param maxDb The maximum boost/cut in decibels (defaults to 12dB).
+   */
+  public setCurve(
+    eqValues: number[],
+    minFreq: number,
+    maxFreq: number,
+    maxDb: number = 12,
+  ): void {
+    const numBands = eqValues.length;
+    if (numBands === 0) return;
+
+    // 1. Clean up existing filters
+    this.input.disconnect();
+    this.filters.forEach((filter) => filter.disconnect());
+    this.filters = [];
+
+    // 2. Calculate optimal spacing
+    // Audio is almost always scaled logarithmically. We calculate the multiplier
+    // needed to step evenly across a logarithmic scale.
+    const ratio = Math.pow(maxFreq / minFreq, 1 / Math.max(1, numBands - 1));
+
+    // Calculate the Q factor (resonance/width) so the bands blend smoothly
+    // Q = sqrt(ratio) / (ratio - 1)
+    const qValue = numBands > 1 ? Math.sqrt(ratio) / (ratio - 1) : 1;
+
+    // 3. Build the filter chain
+    let previousNode: AudioNode = this.input;
+
+    for (let i = 0; i < numBands; i++) {
+      const filter = this.context.createBiquadFilter();
+
+      // Determine filter type (shelves for the edges, peaking for the middle)
+      if (i === 0) {
+        filter.type = "lowshelf";
+      } else if (i === numBands - 1) {
+        filter.type = "highshelf";
+      } else {
+        filter.type = "peaking";
+        filter.Q.value = qValue;
+      }
+
+      // Calculate center frequency for this band
+      const freq = minFreq * Math.pow(ratio, i);
+      filter.frequency.value = Math.min(freq, this.context.sampleRate / 2);
+
+      // Map the -1 to 1 input to -maxDb to +maxDb
+      const normalizedVal = Math.max(-1, Math.min(1, eqValues[i]!));
+      filter.gain.value = normalizedVal * maxDb;
+
+      // Connect the chain: previous -> filter
+      previousNode.connect(filter);
+      previousNode = filter;
+
+      this.filters.push(filter);
+    }
+
+    // Connect the final filter to the output
+    previousNode.connect(this.output);
+  }
+
+  /**
+   * Clears the EQ and returns to a flat passthrough.
+   */
+  public bypass(): void {
+    this.input.disconnect();
+    this.filters.forEach((filter) => filter.disconnect());
+    this.filters = [];
+    this.input.connect(this.output);
   }
 }

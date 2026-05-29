@@ -3,18 +3,17 @@
  */
 
 import { FullModemFilter } from "./filters";
-
-/** Audio frequency measured in Hertz (Hz). */
-type Frequency = number;
-/** Time duration or timestamp measured in seconds. */
-type TimeSec = number;
-/** Symbol rate measured in symbols per second (Baud). */
-type BaudRate = number;
-/** All the numbers in the universe. */
-type Bit = 0 | 1;
+import {
+  type Frequency,
+  type TimeSec,
+  type Bit,
+  encodeFSK,
+  encodeDPSK,
+  encodeQAM16,
+} from "./encodings";
 
 type LoggerLike = {
-  log(message: string): void;
+  log(message: string, time?: TimeSec): void;
 };
 
 /** DTMF map for touch-tone dialing */
@@ -48,76 +47,23 @@ function stringToBits(str: string): Bit[] {
 }
 
 /**
- * Encodes data bits as FSK modulation.
+ * Implements the V.34 LFSR scrambler to generate a pseudo-random bit sequence.
  *
- * @param ctx - The AudioContext to use for oscillator creation
- * @param outputNode - The audio node to connect the oscillator to
- * @param dataBits - Array of bits to encode (LSB first)
- * @param spaceFreq - Frequency (Hz) to use for bit value 0
- * @param markFreq - Frequency (Hz) to use for bit value 1
- * @param startTime - Start time in seconds
- * @param repeats - Number of times to repeat the data sequence
- * @param preamble - Length of time in seconds to play the mark tone before message
- * @param preFlags - Number of flag octets to prepend
- * @param postFlags - Number of flag octets to append
- * @param flagOctet - Bit pattern to use for flag octets
- * @param baudRate - Symbol rate in Baud (bits per second)
- * @returns The stop time of the oscillator
+ * @param length The number of bits to generate
+ * @return An array of bits representing the scrambler output
  */
-function encodeFSK(
-  ctx: AudioContext,
-  outputNode: AudioNode,
-  dataBits: Bit[],
-  spaceFreq: Frequency,
-  markFreq: Frequency,
-  startTime: TimeSec,
-  repeats: number = 1,
-  preamble: TimeSec = 0.1,
-  preFlags: number = 3,
-  postFlags: number = 2,
-  flagOctet: Bit[] = [0, 1, 1, 1, 1, 1, 1, 0],
-  baudRate: BaudRate = 300,
-): number {
-  const preambleMarkLength = Math.ceil(preamble * baudRate);
-  const preambleFlagsLength = preFlags * flagOctet.length;
-  const preambleLength = preambleMarkLength + preambleFlagsLength;
-  const postambleLength = postFlags * flagOctet.length;
-  const dataLength = dataBits.length * repeats;
-  const totalFrameLength = preambleLength + dataLength + postambleLength;
-  if (totalFrameLength === 0) {
-    return startTime;
+function v34LfsrScrambler(length: number): Bit[] {
+  const bits: Bit[] = [];
+  const bitmask = Math.pow(2, 23) - 1;
+  // This is a bit of a joke
+  let state = Math.random() * bitmask;
+  for (let i = 0; i < length; i++) {
+    // output bit is xor of 1, bit 18, and bit 23 of the current state
+    const newBit = ((1 ^ (state >> 17) ^ (state >> 22)) & 1) as Bit;
+    bits.push(newBit);
+    state = ((state << 1) | newBit) & bitmask;
   }
-
-  const bitStream: Bit[] = new Array(totalFrameLength * repeats);
-  for (let r = 0; r < repeats; r++) {
-    bitStream.push(...new Array(preambleMarkLength).fill(1));
-    for (let i = 0; i < preFlags; i++) {
-      bitStream.push(...flagOctet);
-    }
-    bitStream.push(...dataBits);
-    for (let i = 0; i < postFlags; i++) {
-      bitStream.push(...flagOctet);
-    }
-  }
-
-  const osc = ctx.createOscillator();
-  osc.type = "sine";
-  // Set default frequency to the first bit's frequency to avoid initial clicks
-  osc.frequency.value = bitStream[0] === 1 ? markFreq : spaceFreq;
-  const bitDuration = 1 / baudRate;
-  let currentTime = startTime;
-
-  for (const bit of bitStream) {
-    const freq = bit === 1 ? markFreq : spaceFreq;
-    osc.frequency.setValueAtTime(freq, currentTime);
-    currentTime += bitDuration;
-  }
-
-  osc.connect(outputNode);
-  osc.start(startTime);
-  osc.stop(currentTime);
-
-  return currentTime;
+  return bits;
 }
 
 /**
@@ -141,10 +87,11 @@ function playTones(
   invertPhase: boolean = false,
 ): void {
   const gain = ctx.createGain();
-  gain.gain.value = amplitude / freqs.length;
-  if (invertPhase) {
-    gain.gain.value = -gain.gain.value;
-  }
+  // Maintain perceptual loudness by normalizing gain based on number of tones
+  const normalizedAmplitude = amplitude / Math.sqrt(freqs.length);
+  const phase = invertPhase ? -1 : 1;
+  gain.gain.setValueAtTime(amplitude * normalizedAmplitude * phase, startTime);
+
   freqs.forEach((freq) => {
     const osc = ctx.createOscillator();
     osc.frequency.value = freq;
@@ -156,50 +103,47 @@ function playTones(
 }
 
 /**
- * Plays a complex probe pulse using harmonic series.
- * Used for V.34 line probing to characterize the line characteristics.
- * Due to the complex envelope, the pulse time is  0.7s and not configurable.
+ * Plays the 2100Hz ANSam tone with phase flips every ~450ms to signal the modem to switch to data mode.
  *
  * @param ctx - The AudioContext to use
  * @param outputNode - The audio node to connect to
- * @param time - Start time in seconds
+ * @param startTime - Start time in seconds
+ * @param duration - Duration in seconds
+ * @returns The end time of the played tone
  */
-function playProbePulse(
+function playAnsam(
   ctx: AudioContext,
   outputNode: AudioNode,
-  time: TimeSec,
-): void {
-  const pulseGain = ctx.createGain();
+  startTime: TimeSec,
+  duration: TimeSec = 2.975,
+): TimeSec {
+  const carrierOsc = ctx.createOscillator();
+  carrierOsc.frequency.value = 2100;
+  const carrierGain = ctx.createGain();
+  carrierGain.gain.value = 0.45;
 
-  pulseGain.gain.setValueAtTime(0, time);
-  // Overshoot
-  pulseGain.gain.linearRampToValueAtTime(0.1, time + 0.001);
-  // Settle
-  //pulseGain.gain.exponentialRampToValueAtTime(0.1, time + 0.07);
-  // Sustain
-  pulseGain.gain.setValueAtTime(0.1, time + 0.1);
-  // Long tail
-  pulseGain.gain.exponentialRampToValueAtTime(0.001, time + 0.7);
+  const amOsc = ctx.createOscillator();
+  amOsc.frequency.value = 15;
+  const amModGain = ctx.createGain();
+  amModGain.gain.value = 0.2 * carrierGain.gain.value;
 
-  for (let i = 1; i <= 21; i++) {
-    const osc = ctx.createOscillator();
-    osc.type = "sine";
-    osc.frequency.value = i * 166;
-
-    const real = new Float32Array(2);
-    const imag = new Float32Array(2);
-    // Desynced harmonics with random phase to create a more complex probe signal
-    const phase = Math.random() * Math.PI * 2;
-    real[1] = Math.cos(phase);
-    imag[1] = Math.sin(phase);
-    const wave = ctx.createPeriodicWave(real, imag);
-    osc.setPeriodicWave(wave);
-
-    osc.connect(pulseGain);
-    osc.start(time);
-    osc.stop(time + 0.8);
+  amOsc.connect(amModGain);
+  amModGain.connect(carrierGain);
+  carrierOsc.connect(carrierGain);
+  const phaseInvert = ctx.createGain();
+  let polarity = 1;
+  const ansamShiftRate = 0.425;
+  for (let offset = 0; offset < duration; offset += ansamShiftRate) {
+    phaseInvert.gain.setValueAtTime(polarity, startTime + offset);
+    polarity *= -1;
   }
-  pulseGain.connect(outputNode);
+  carrierGain.connect(phaseInvert).connect(outputNode);
+  carrierOsc.start(startTime);
+  amOsc.start(startTime);
+  carrierOsc.stop(startTime + duration);
+  amOsc.stop(startTime + duration);
+
+  return startTime + duration;
 }
 
 /** * Builds the complete modem dialup pipeline with tones, FSK sequences, and probes.
@@ -215,12 +159,11 @@ function buildModemPipeline(
   logger: LoggerLike,
 ): TimeSec {
   let t = ctx.currentTime + 0.1;
-
   // Dial tone
   playTones(ctx, outputNode, [350, 440], t, 1.73);
   t += 1.5;
   // Dialing
-  logger.log("Dialing...");
+  logger.log("Dialing...", t);
   "18005551234".split("").forEach((d) => {
     const freqs = dtmfMap[d];
     if (!freqs) return;
@@ -234,197 +177,192 @@ function buildModemPipeline(
   t += 2.0;
 
   // Request V.8 bis negotiation
-  logger.log("Initiating V.8 bis transaction...");
+  logger.log("Initiating V.8 bis transaction...", t);
+  // (V8bISeg) Caller initializes request
   playTones(ctx, outputNode, [1375, 2002], t, 0.4, 0.2);
-  t += 0.3;
-  // (CRe) List capabilities request
+  t += 0.395;
+  // (CReSeg) Caller sends capabilities request
   playTones(ctx, outputNode, [400], t, 0.1, 0.4);
-  t += 0.1;
-  // Caller response and agreement to negotiate
+  t += 0.25; // signal len + propagation delay
+  // (V8bRSeg) Answerer responds to capabilities request
   playTones(ctx, outputNode, [1529, 2225], t, 0.4, 0.4);
-  t += 0.35;
-  // (CRd) Agreement to list capabilities
+  t += 0.395;
+  // (CRdSeg) Answerer lists capabilities
   playTones(ctx, outputNode, [1900], t, 0.1, 0.12);
-  t += 0.15;
-  // (ES) escape to information transfer mode
+  t += 0.15; // signal len + propagation delay
+  // (ESrSeg) Caller sends escape signal
   playTones(ctx, outputNode, [1650], t, 0.1, 0.03);
-  t += 0.02;
+  t += 0.175; // signal len + propagation delay
 
-  logger.log("Capabilities advertisement...");
+  logger.log("Capabilities advertisement...", t);
   // (CL) Capabilities list
   t = encodeFSK(
     ctx,
     outputNode,
     stringToBits("HEY I WANNA GET ONLINE"),
-    1000,
-    1200,
+    1180,
+    980,
     t,
     1,
   );
   t += 0.15;
   // (MS) Mode selection
-  logger.log("Selecting V.90 mode...");
+  logger.log("Selecting V.90 mode...", t);
   t = encodeFSK(
     ctx,
     outputNode,
     stringToBits("YEA SURE LETS GET ONLINE"),
+    1850,
     1650,
-    1900,
     t,
     1,
   );
   // (ACK) ends V.8 bis transaction
-  t = encodeFSK(ctx, outputNode, stringToBits("LETS GO"), 1000, 1200, t, 1);
-  t += 0.88;
+  t = encodeFSK(ctx, outputNode, stringToBits("LETS GO"), 1180, 980, t, 1);
+  t += 0.88; // Guard time before echo cancellation starts
 
   // ANSam
-  logger.log("DETECTING ANSam (2100Hz + PHASE FLIPS)...");
-  const ansOsc = ctx.createOscillator();
-  ansOsc.frequency.value = 2100;
-  const amOsc = ctx.createOscillator();
-  amOsc.frequency.value = 15;
-  const amGain = ctx.createGain();
-  amGain.gain.value = 0.4;
-  const amMod = ctx.createGain();
-  amMod.gain.value = 0.45;
-  amOsc.connect(amMod).connect(amGain.gain);
-  ansOsc.connect(amGain);
-  const phaseInvert = ctx.createGain();
-  let polarity = 1;
-  for (let offset = 0; offset < 3.3; offset += 0.45) {
-    phaseInvert.gain.setValueAtTime(polarity, t + offset);
-    polarity *= -1;
-  }
-  amGain.connect(phaseInvert).connect(outputNode);
-  ansOsc.start(t);
-  amOsc.start(t);
-  ansOsc.stop(t + 3.3);
-  amOsc.stop(t + 3.3);
+  logger.log("DETECTING ANSam...", t);
+  t = playAnsam(ctx, outputNode, t, 3.14159);
 
-  // --- OVERLAPPING FSK ---
-  let t_fsk = t + 2.8;
-  logger.log("V.8 MENU NEGOTIATION (FSK REPEATS)...");
-  let t_srv1 = encodeFSK(
+  logger.log("V.8 MENU NEGOTIATION...", t);
+  // (CM) Client sends menu
+  // 9 bytes == 72 bits, @300 baud == 0.24s signal length + preamble ~0.25 s
+  // Ansam should stop after min 2  CM + 100ms
+  const tCmStart = t - 0.6;
+  const tCmEnd = encodeFSK(
     ctx,
     outputNode,
     stringToBits("COMPUTER!"),
-    1750,
-    1650,
-    t_fsk,
+    1180,
+    980,
+    tCmStart,
     6,
     0.025,
   );
-  let t_cli = encodeFSK(
+  // (JM) Server responds with joint menu 0.075s after Ansam ends
+  const tJmStart = t + 0.075;
+  const tJmEnd = encodeFSK(
     ctx,
     outputNode,
     stringToBits("UGH DATA!"),
-    1080,
-    980,
-    t_fsk + 0.35,
+    1850,
+    1650,
+    tJmStart,
     3,
     0.025,
   );
-  let t_srv2 = encodeFSK(
+  const tAckStart = tJmEnd - 0.25;
+  const tAckEnd = encodeFSK(
     ctx,
     outputNode,
     stringToBits("SRV_ACK"),
-    1750,
-    1650,
-    t_cli - 0.2,
+    1190,
+    980,
+    tAckStart,
     2,
     0.025,
   );
-  t = Math.max(t_srv1, t_cli, t_srv2) + 0.2;
+  // add quiet time before next stage
+  t = Math.max(tCmEnd, tJmEnd, tAckEnd) + 0.75;
 
-  // --- BONG BONG PROBES ---
-  logger.log("V.34 LINE PROBING (CLIENT -> SERVER)...");
-  const probeCarriers = [1200, 1850, 2500] as const;
+  logger.log("BEGIN LINE PROBE AND RANGING...", t);
+  const phaseStart = t;
+  const rangingTime = 0.35;
+  const rangingEnd = phaseStart + rangingTime;
 
-  // Initial carrier tone before the probe starts.
-  playTones(ctx, outputNode, probeCarriers, t, 0.05);
+  playTones(ctx, outputNode, [1800], phaseStart, rangingTime);
+  const callProbeEnd = encodeDPSK(
+    ctx,
+    outputNode,
+    stringToBits("PROBING!"),
+    1200,
+    phaseStart,
+  );
+  playTones(ctx, outputNode, [1200], callProbeEnd, rangingEnd - callProbeEnd);
+  const answerProbeEnd = encodeDPSK(
+    ctx,
+    outputNode,
+    stringToBits("PROBED!!"),
+    2400,
+    phaseStart + 0.05,
+  );
+  playTones(
+    ctx,
+    outputNode,
+    [2400],
+    answerProbeEnd,
+    rangingEnd - answerProbeEnd,
+  );
 
-  // Start the first probe set with a 180° phase-inverted carrier tone.
-  const firstProbeStart = t + 0.05;
-  playTones(ctx, outputNode, probeCarriers, firstProbeStart, 0.05, 0.2, true);
-  playProbePulse(ctx, outputNode, firstProbeStart);
-  playProbePulse(ctx, outputNode, firstProbeStart + 0.2);
+  t = rangingEnd;
 
-  // Short carrier burst between the first and second probe pairs.
-  const interProbeToneStart = firstProbeStart + 0.8;
-  playTones(ctx, outputNode, probeCarriers, interProbeToneStart, 0.05);
+  const broadProbeFreqs = Array.from(
+    { length: 21 },
+    (_, index) => 150 + index * 150,
+  );
+  // TODO: Work on the timing here
+  // L1 probe
+  playTones(ctx, outputNode, broadProbeFreqs, t, 0.35, 0.75, true);
+  t += 0.35;
+  playTones(ctx, outputNode, [1200, 1800], t - 0.05, 0.1, 0.3, true);
+  //playTones(ctx, outputNode, [1200, 2400], t, 0.8, 0.3, true);
+  playTones(ctx, outputNode, [1800, 2400], t - 0.05, 0.15);
+  t += 0.08;
+  // L2 probe
+  playTones(ctx, outputNode, broadProbeFreqs, t, 0.35, 0.75, true);
+  t += 0.35;
+  playTones(ctx, outputNode, [2400], t - 0.1, 0.3);
+  playTones(ctx, outputNode, [1800], t - 0.1, 0.45);
+  //playTones(ctx, outputNode, [2400], t, 0.1);
+  //playTones(ctx, outputNode, [1800], t, 0.2);
 
-  t += 0.9;
-  playProbePulse(ctx, outputNode, t);
-  playProbePulse(ctx, outputNode, t + 0.2);
-
-  const finalCarrierStart = t + 1.0;
-  playTones(ctx, outputNode, probeCarriers, finalCarrierStart, 0.25);
-
-  // Overlap the final carrier series with the next content.
-  t = finalCarrierStart + 0.05;
+  t = encodeDPSK(ctx, outputNode, stringToBits("WOW NICE PROBES"), 1200, t);
+  t = encodeDPSK(ctx, outputNode, stringToBits("GOOD PROBES"), 2400, t);
+  t += 0.05;
 
   // --- SEQUENTIAL QAM TRAINING ---
-  logger.log("V.90 TRAINING: CLIENT (3800Hz LP)...");
-  const qamDur = 3.0;
-  const noiseBuf = ctx.createBuffer(
+  logger.log("V.90 TRAINING: CLIENT...", t);
+  let duration = 0.16;
+  let symbolRate = 2400;
+  encodeQAM16(
+    ctx,
+    outputNode,
+    v34LfsrScrambler(symbolRate * duration * 4), // 4 bits per symbol for QAM16
+    1600,
+    t,
+    5,
     1,
-    ctx.sampleRate * qamDur * 2,
-    ctx.sampleRate,
+    3,
+    600,
   );
-  const pcmData = noiseBuf.getChannelData(0);
-  for (let i = 0; i < pcmData.length; i++) {
-    pcmData[i] = Math.random() * 2 - 1;
-  }
-
-  const eqBody = ctx.createBiquadFilter();
-  eqBody.type = "lowshelf";
-  eqBody.frequency.value = 800;
-  eqBody.gain.value = 3;
-  const eqMid = ctx.createBiquadFilter();
-  eqMid.type = "peaking";
-  eqMid.frequency.value = 1500;
-  eqMid.Q.value = 1;
-  eqMid.gain.value = 4;
-  eqBody.connect(eqMid);
-
-  // CLIENT SESSION
-  const cliNoise = ctx.createBufferSource();
-  cliNoise.buffer = noiseBuf;
-  const cliLpf = ctx.createBiquadFilter();
-  cliLpf.type = "lowpass";
-  cliLpf.frequency.value = 3800;
-  const cliGain = ctx.createGain();
-  cliGain.gain.setValueAtTime(0, t);
-  cliGain.gain.linearRampToValueAtTime(0.25, t + 0.1);
-  cliGain.gain.setValueAtTime(0.25, t + qamDur - 0.1);
-  cliGain.gain.linearRampToValueAtTime(0, t + qamDur);
-
-  cliNoise.connect(eqBody);
-  eqMid.connect(cliLpf);
-  cliLpf.connect(cliGain).connect(outputNode);
-  cliNoise.start(t);
-  t += qamDur + 0.1;
-
-  // SERVER SESSION
-  logger.log("V.90 TRAINING: SERVER (4200Hz LP)...");
-  const srvNoise = ctx.createBufferSource();
-  srvNoise.buffer = noiseBuf;
-  const srvLpf = ctx.createBiquadFilter();
-  srvLpf.type = "lowpass";
-  srvLpf.frequency.value = 4200;
-  const srvGain = ctx.createGain();
-  srvGain.gain.setValueAtTime(0, t);
-  srvGain.gain.linearRampToValueAtTime(0.25, t + 0.1);
-  srvGain.gain.setValueAtTime(0.25, t + qamDur - 0.1);
-  srvGain.gain.linearRampToValueAtTime(0, t + qamDur);
-
-  srvNoise.connect(eqBody);
-  eqMid.connect(srvLpf);
-  srvLpf.connect(srvGain).connect(outputNode);
-  srvNoise.start(t);
-  t += qamDur;
-
-  logger.log("TRAINING COMPLETE. CONNECTED!");
+  t += duration + 0.1;
+  logger.log("V.90 TRAINING: SERVER...", t);
+  duration = 0.16;
+  encodeQAM16(
+    ctx,
+    outputNode,
+    v34LfsrScrambler(symbolRate * duration), // 600 baud for 0.16s == 96 bits
+    1800,
+    t,
+    5,
+    1,
+    3,
+    2400,
+  );
+  t += duration + 0.1;
+  encodeQAM16(
+    ctx,
+    outputNode,
+    v34LfsrScrambler(symbolRate * duration), // 600 baud for 0.16s == 96 bits
+    1800,
+    t,
+    5,
+    1,
+    3,
+    3000,
+  );
+  logger.log("TRAINING COMPLETE. CONNECTED!", t);
   return t;
 }
 
@@ -455,8 +393,8 @@ function initiateDialup(
   ctx: AudioContext,
   logger: LoggerLike = { log: () => {} },
 ): DialupPipeline {
-  const log = (msg: string) => logger.log(msg);
-  log("CONNECTION START...");
+  const log = (msg: string, time?: TimeSec) => logger.log(msg, time);
+  log("CONNECTION START...", ctx.currentTime);
 
   const inputNode = ctx.createGain();
   const outputNode = ctx.createGain();
@@ -475,9 +413,10 @@ function initiateDialup(
 
   const completion = new Promise<void>((resolve) => {
     const t = buildModemPipeline(ctx, inputNode, logger);
+    const completionTime = t;
     setTimeout(
       () => {
-        log("<b>CONNECT 56000 / V.90</b>");
+        log("<b>CONNECT 56000 / V.90</b>", completionTime);
         resolve();
       },
       (t - ctx.currentTime) * 1000,

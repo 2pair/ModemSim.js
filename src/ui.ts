@@ -38,8 +38,11 @@ export class ModemTimer {
 export class Logger {
   constructor(private logEl: HTMLElement) {}
 
-  public log(message: string): void {
-    const timestamp = new Date().toISOString().substring(11, 19);
+  public log(message: string, time?: number): void {
+    const timestamp =
+      time == null
+        ? new Date().toISOString().substring(11, 19)
+        : `+${time.toFixed(3)}`;
     this.logEl.innerHTML += `\n[${timestamp}] ${message}`;
     this.logEl.scrollTop = this.logEl.scrollHeight;
   }

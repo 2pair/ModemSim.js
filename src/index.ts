@@ -2,7 +2,12 @@ import "./styles.css";
 import { initiateDialup } from "./modem";
 import { analyzePipeline, ModemResponseCanvas } from "./frequencyVisualizer";
 import { ModemTimer, Logger } from "./ui";
-import { FullModemFilter } from "./filters";
+import {
+  FullModemFilter,
+  SpeakerFilter,
+  SoftSaturationShaper,
+  TelephoneLineFilter,
+} from "./filters";
 
 // Main app entry point
 const app = document.getElementById("app");
@@ -38,7 +43,8 @@ if (app) {
 
   const renderAnalysis = async () => {
     try {
-      const analysisData = await analyzePipeline((ctx: AudioContext) => {
+      const analysisData = await analyzePipeline((ctx: BaseAudioContext) => {
+        //const modemFilter = new SpeakerFilter(ctx);
         const modemFilter = new FullModemFilter(ctx);
         return { input: modemFilter.input, output: modemFilter.output };
       }, audioCtx.sampleRate);
