@@ -37,3 +37,42 @@ main {
 p {
   margin-bottom: 1rem;
 }
+
+
+:root {
+  --grey: #ccc;
+  --shadow: #999;
+  --dark-shadow: #444;
+}
+
+.btn {
+  font-size: 12px;
+  color: black;
+  font-family: "Chicago", "Geneva", system-ui, sans-serif; 
+  background-color: var(--grey);
+  
+  padding: 3px 15px;
+  min-width: 68px;
+  height: 20px;
+  cursor: pointer;
+  
+  border: 1px solid var(--dark-shadow);
+  border-radius: 3px;
+  
+  box-shadow: 
+    1px 1px 0px var(--dark-shadow),
+    inset 1px 1px 0px white;
+  
+  -webkit-font-smoothing: none;
+}
+
+.btn:active {
+  background-color: var(--shadow);
+  
+  box-shadow: 
+    0px 0px 0px transparent,
+    inset 1px 1px 0px var(--dark-shadow);
+  
+  transform: translate(1px, 1px);
+}
+
