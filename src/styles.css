@@ -64,6 +64,13 @@ p {
     inset 1px 1px 0px white;
   
   -webkit-font-smoothing: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+  touch-action: manipulation;
+
+  transition: all 0s linear;
+  transition-delay: 0.15s; 
 }
 
 .btn:active {
@@ -74,5 +81,8 @@ p {
     inset 1px 1px 0px var(--dark-shadow);
   
   transform: translate(1px, 1px);
+
+  transition: none;
+  transition-delay: 0s;
 }
 

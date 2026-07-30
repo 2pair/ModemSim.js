@@ -21,7 +21,7 @@ if (app) {
     <main>
       <div id="timer" style="font-family: monospace; font-size: 2rem; color: #0f0; margin-bottom: 10px;">00:00.00</div>
       <canvas id="responseCanvas" width="600" height="200" style="width: 100%; display: block;"></canvas>
-      <p>After you've connected your modem to a phone line, use the button below to dial into your ISP:</p>
+      <p>After you've connected your modem to a phone line, use the button below to dial into the ISP:</p>
       <button id="btn">Connect</button>
       <div id="log" style="white-space: pre-wrap; font-family: monospace; background: #000; color: #0f0; padding: 10px; height: 200px; overflow-y: auto; margin-top: 15px;"></div>
     </main>
