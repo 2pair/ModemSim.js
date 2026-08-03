@@ -17,7 +17,8 @@ export function magnitudeToDb(mag: number): number {
 }
 
 /**
- * 4th-Order Butterworth Bandpass Filter.
+ * Implements bandpass filtering and mu-law compression to emulate
+ * the frequency response of a telephone line.
  */
 export class TelephoneLineFilter implements AudioFilter {
   public input: GainNode;
@@ -50,14 +51,42 @@ export class TelephoneLineFilter implements AudioFilter {
     lp1.type = "lowpass";
     lp1.frequency.value = lpCutoff;
     lp1.Q.value = q1;
-    //this.input.connect(lp1);
     hp2.connect(lp1);
     const lp2 = ctx.createBiquadFilter();
     lp2.type = "lowpass";
     lp2.frequency.value = lpCutoff;
     lp2.Q.value = q2;
     lp1.connect(lp2);
-    lp2.connect(this.output);
+
+    const muLawShaper = ctx.createWaveShaper();
+    muLawShaper.curve = this.makeMuLawCurve();
+    // smooth the curve to reduce aliasing artifacts
+    muLawShaper.oversample = "4x";
+
+    lp2.connect(muLawShaper);
+    muLawShaper.connect(this.output);
+  }
+
+  /**
+   * Generates a Float32Array representing the Mu-law compression curve from -1.0 to 1.0.
+   * @param mu Standard telecommunication mu value is 255.
+   * @param resolution Number of points in the curve.
+   * @returns A Float32Array containing the Mu-law curve values.
+   */
+  private makeMuLawCurve(
+    mu: number = 255,
+    resolution: number = 4096,
+  ): Float32Array<ArrayBuffer> {
+    const curve = new Float32Array(resolution);
+    // Precompute constant value
+    const denominator = Math.log(1 + mu);
+
+    for (let i = 0; i < resolution; i++) {
+      const x = (i * 2) / (resolution - 1) - 1;
+      // Mu-law compression algorithm
+      curve[i] = Math.sign(x) * (Math.log(1 + mu * Math.abs(x)) / denominator);
+    }
+    return curve;
   }
 }
 
@@ -73,21 +102,20 @@ export class SpeakerFilter implements AudioFilter {
   constructor(ctx: BaseAudioContext) {
     this.input = ctx.createGain();
     this.output = ctx.createGain();
-    // Aggressive low-end acoustic roll-off
+
+    // Aggressive low-end roll-off
     const hp = ctx.createBiquadFilter();
     hp.type = "highpass";
     hp.frequency.value = 100;
     hp.Q.value = magnitudeToDb(0.7071);
     this.input.connect(hp);
-
-    //gradual low-end roll-off (uncomment if you want a more extreme "tiny speaker" effect)
     const hp2 = ctx.createBiquadFilter();
     hp2.type = "highpass";
     hp2.frequency.value = 800;
     hp2.Q.value = magnitudeToDb(0.75);
     hp.connect(hp2);
 
-    // Sharp midrange resonant peak
+    // Midrange resonant peak
     const peaking = ctx.createBiquadFilter();
     peaking.type = "peaking";
     peaking.frequency.value = 1500;
@@ -95,10 +123,10 @@ export class SpeakerFilter implements AudioFilter {
     peaking.gain.value = 4;
     hp2.connect(peaking);
 
-    // High-frequency acoustic smoothing
+    // More gentle high-frequency roll-off
     const lp = ctx.createBiquadFilter();
     lp.type = "lowpass";
-    lp.frequency.value = 5000;
+    lp.frequency.value = 10000;
     lp.Q.value = magnitudeToDb(0.7071);
     peaking.connect(lp);
     lp.connect(this.output);
@@ -134,6 +162,8 @@ export class SoftSaturationShaper implements AudioFilter {
 
   /**
    * Updates the drive curve and balances the internal volume stages.
+   * @param ctx The audio context to use for timing.
+   * @param drive The drive amount (0.01 to 1.0). Higher values are more distorted.
    */
   public updateDrive(ctx: BaseAudioContext, drive: number): void {
     // Prevent divide-by-zero errors if drive is exactly 0
@@ -168,10 +198,11 @@ export class FullModemFilter implements AudioFilter {
 
     const speakerFilter = new SpeakerFilter(ctx);
     const phoneFilter = new TelephoneLineFilter(ctx);
-    const saturationFilter = new SoftSaturationShaper(ctx, 0.75);
+    //const saturationFilter = new SoftSaturationShaper(ctx, 0.75);
 
-    this.input.connect(saturationFilter.input);
-    saturationFilter.output.connect(phoneFilter.input);
+    //this.input.connect(saturationFilter.input);
+    //saturationFilter.output.connect(phoneFilter.input);
+    this.input.connect(phoneFilter.input);
     phoneFilter.output.connect(speakerFilter.input);
     speakerFilter.output.connect(this.output);
   }
@@ -187,8 +218,7 @@ export class FrequencyShaper {
   constructor(context: BaseAudioContext) {
     this.context = context;
 
-    // We use dummy GainNodes at the ends so you can safely connect/disconnect
-    // the shaper from other stages without worrying about the internal chain.
+    // We use dummy GainNodes at the ends to enable pipelining nodes.
     this.input = this.context.createGain();
     this.output = this.context.createGain();
 
@@ -212,14 +242,12 @@ export class FrequencyShaper {
     const numBands = eqValues.length;
     if (numBands === 0) return;
 
-    // 1. Clean up existing filters
+    // Disconnect existing filters and clear the array
     this.input.disconnect();
     this.filters.forEach((filter) => filter.disconnect());
     this.filters = [];
 
-    // 2. Calculate optimal spacing
-    // Audio is almost always scaled logarithmically. We calculate the multiplier
-    // needed to step evenly across a logarithmic scale.
+    // calculate multiplicative ratio for geometric spacing of frequencies
     const ratio = Math.pow(maxFreq / minFreq, 1 / Math.max(1, numBands - 1));
 
     // Calculate the Q factor (resonance/width) so the bands blend smoothly

@@ -155,7 +155,7 @@ export class ModemResponseCanvas {
       );
 
       const val = data[bin]!;
-      let y = 0;
+      let y: number;
 
       if (type === "magnitude") {
         // The Y-axis abstraction replaces the hardcoded dB math
@@ -167,7 +167,11 @@ export class ModemResponseCanvas {
         y = this.height / 2 - val * (this.height / (2 * Math.PI));
       }
 
-      x === 0 ? this.ctx.moveTo(x, y) : this.ctx.lineTo(x, y);
+      if (x === 0) {
+        this.ctx.moveTo(x, y);
+      } else {
+        this.ctx.lineTo(x, y);
+      }
     }
     this.ctx.stroke();
   }

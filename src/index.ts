@@ -2,12 +2,7 @@ import "./styles.css";
 import { initiateDialup } from "./modem";
 import { analyzePipeline, ModemResponseCanvas } from "./frequencyVisualizer";
 import { ModemTimer, Logger } from "./ui";
-import {
-  FullModemFilter,
-  SpeakerFilter,
-  SoftSaturationShaper,
-  TelephoneLineFilter,
-} from "./filters";
+import { FullModemFilter } from "./filters";
 
 // Main app entry point
 const app = document.getElementById("app");

@@ -43,6 +43,7 @@ p {
   --grey: #ccc;
   --shadow: #999;
   --dark-shadow: #444;
+  --disabled: #888;
 }
 
 .btn {
@@ -84,5 +85,17 @@ p {
 
   transition: none;
   transition-delay: 0s;
+}
+
+.btn:disabled {
+  color: var(--disabled);
+  border-color: var(--disabled);
+  pointer-events: none;
+}
+
+.btn:enabled {
+  color: black;
+  border-color: var(--dark-shadow);
+  pointer-events: auto;
 }
 
