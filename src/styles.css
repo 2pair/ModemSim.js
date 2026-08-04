@@ -34,6 +34,18 @@ main {
   padding: 1rem;
 }
 
+.visualizer-grid {
+  display: grid;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.visualizer-panel h3 {
+  font-size: 1rem;
+  margin-bottom: 0.5rem;
+  font-weight: 600;
+}
+
 p {
   margin-bottom: 1rem;
 }

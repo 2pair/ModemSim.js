@@ -2,7 +2,7 @@
  *   It's a real life modem, Michael!
  */
 
-import { FullModemFilter } from "./filters";
+import { TelephoneLineFilter, SpeakerFilter } from "./filters";
 import {
   type Frequency,
   type TimeSec,
@@ -78,7 +78,7 @@ function v34LfsrScrambler(length: number): Bit[] {
  * @param invertPhase - If true, inverts the phase of the tones
  */
 function playTones(
-  ctx: AudioContext,
+  ctx: BaseAudioContext,
   outputNode: AudioNode,
   freqs: readonly Frequency[],
   startTime: TimeSec,
@@ -112,7 +112,7 @@ function playTones(
  * @returns The end time of the played tone
  */
 function playAnsam(
-  ctx: AudioContext,
+  ctx: BaseAudioContext,
   outputNode: AudioNode,
   startTime: TimeSec,
   duration: TimeSec = 2.975,
@@ -146,15 +146,15 @@ function playAnsam(
   return startTime + duration;
 }
 
-/** * Builds the complete modem dialup pipeline with tones, FSK sequences, and probes.
+/** * Builds the complete modem dialup handshake.
  *
  * @param ctx - The AudioContext to use for tone generation
  * @param outputNode - The audio node to connect the modem output to
  * @param logger - Logger for connection progress updates
  * @returns The total duration of the dialup sequence in seconds
  */
-function buildModemPipeline(
-  ctx: AudioContext,
+function buildModemHandhsake(
+  ctx: BaseAudioContext,
   outputNode: GainNode,
   logger: LoggerLike,
 ): TimeSec {
@@ -372,6 +372,21 @@ export type DialupPipeline = {
   completion: Promise<void>;
 };
 
+function createPhoneAudioPipeline(ctx: OfflineAudioContext): {
+  input: GainNode;
+  output: GainNode;
+} {
+  const inputNode = ctx.createGain();
+  const outputNode = ctx.createGain();
+  const phoneFilter = new TelephoneLineFilter(ctx);
+
+  inputNode.connect(phoneFilter.input);
+  phoneFilter.output.connect(outputNode);
+  outputNode.connect(ctx.destination);
+
+  return { input: inputNode, output: outputNode };
+}
+
 /**
  * Initiates a complete V.90 modem handshake sequence.
  *
@@ -396,34 +411,63 @@ function initiateDialup(
   const log = (msg: string, time?: TimeSec) => logger.log(msg, time);
   log("CONNECTION START...", ctx.currentTime);
 
-  const inputNode = ctx.createGain();
-  const outputNode = ctx.createGain();
-  inputNode.gain.value = 1.0;
-  outputNode.gain.value = 1.0;
-
   const masterGain = ctx.createGain();
   masterGain.gain.value = 0.6;
   masterGain.connect(ctx.destination);
 
-  const modemFilter = new FullModemFilter(ctx);
+  const phoneSampleRate = 8000;
+  const phoneCtx = new OfflineAudioContext(
+    1,
+    phoneSampleRate * 20,
+    phoneSampleRate,
+  );
+  const phonePipeline = createPhoneAudioPipeline(phoneCtx);
 
-  inputNode.connect(modemFilter.input);
-  modemFilter.output.connect(outputNode);
-  outputNode.connect(masterGain);
-
-  const completion = new Promise<void>((resolve) => {
-    const t = buildModemPipeline(ctx, inputNode, logger);
-    const completionTime = t;
-    setTimeout(
-      () => {
-        log("<b>CONNECT 56000 / V.90</b>", completionTime);
-        resolve();
-      },
-      (t - ctx.currentTime) * 1000,
+  const completion = (async () => {
+    const completionTime = buildModemHandhsake(
+      phoneCtx,
+      phonePipeline.input,
+      logger,
     );
-  });
 
-  return { input: inputNode, output: outputNode, completion };
+    let renderedBuffer: AudioBuffer | undefined;
+    renderedBuffer = await phoneCtx.startRendering();
+
+    const actualLength = Math.min(
+      renderedBuffer.length,
+      Math.floor(completionTime * renderedBuffer.sampleRate),
+    );
+    // The phone audio pipeline is mono
+    const playbackBuffer = ctx.createBuffer(
+      1,
+      actualLength,
+      renderedBuffer.sampleRate,
+    );
+    playbackBuffer.copyToChannel(
+      renderedBuffer.getChannelData(0).subarray(0, actualLength),
+      0,
+    );
+
+    const playbackSource = ctx.createBufferSource();
+    playbackSource.buffer = playbackBuffer;
+
+    const speakerFilter = new SpeakerFilter(ctx);
+    playbackSource.connect(speakerFilter.input);
+    speakerFilter.output.connect(masterGain);
+
+    playbackSource.start(ctx.currentTime);
+    await new Promise<void>((resolve) => {
+      playbackSource.onended = () => resolve();
+    });
+
+    log("<b>CONNECT V.90</b>", completionTime);
+  })();
+
+  return {
+    input: phonePipeline.input,
+    output: phonePipeline.output,
+    completion,
+  };
 }
 
 export { initiateDialup };

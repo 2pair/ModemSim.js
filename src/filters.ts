@@ -4,15 +4,11 @@ export interface AudioFilter {
 }
 
 /**
- * Converts a linear magnitude value to decibels for biquad filter gain` parameters.
- *
- * The Web Audio API's biquad filters use a Q parameter that is logarithmic in nature.
- * This function converts a linear magnitude (e.g., 0.7071 for Butterworth Q value)
- * to the corresponding dB value.
- * @param mag The linear magnitude value to convert (e.g., 0.7071).
- * @returns The corresponding magnitude value in decibels for use in biquad filters.
+ * Converts a linear magnitude value (e.q Q value) to decibels.
+ * @param mag The linear magnitude value to convert.
+ * @returns The corresponding magnitude value in decibels.
  */
-export function magnitudeToDb(mag: number): number {
+function magnitudeToDb(mag: number): number {
   return 20 * Math.log10(mag);
 }
 
@@ -26,8 +22,8 @@ export class TelephoneLineFilter implements AudioFilter {
 
   constructor(ctx: BaseAudioContext) {
     // Web audio biquads expect Q values in dB for LP and HP filters
-    const q1 = magnitudeToDb(0.541196); // 1st Butterworth stage
-    const q2 = magnitudeToDb(1.306563); // 2nd Butterworth stage
+    const q1 = 0.541196; // 1st Butterworth stage
+    const q2 = 1.306563; // 2nd Butterworth stage
     const hpCutoff = 400;
     const lpCutoff = 3400;
 
@@ -38,24 +34,24 @@ export class TelephoneLineFilter implements AudioFilter {
     const hp1 = ctx.createBiquadFilter();
     hp1.type = "highpass";
     hp1.frequency.value = hpCutoff;
-    hp1.Q.value = q1;
+    hp1.Q.value = magnitudeToDb(q1);
     this.input.connect(hp1);
     const hp2 = ctx.createBiquadFilter();
     hp2.type = "highpass";
     hp2.frequency.value = hpCutoff;
-    hp2.Q.value = q2;
+    hp2.Q.value = magnitudeToDb(q2);
     hp1.connect(hp2);
 
     // 4th-order Lowpass
     const lp1 = ctx.createBiquadFilter();
     lp1.type = "lowpass";
     lp1.frequency.value = lpCutoff;
-    lp1.Q.value = q1;
+    lp1.Q.value = magnitudeToDb(q1);
     hp2.connect(lp1);
     const lp2 = ctx.createBiquadFilter();
     lp2.type = "lowpass";
     lp2.frequency.value = lpCutoff;
-    lp2.Q.value = q2;
+    lp2.Q.value = magnitudeToDb(q2);
     lp1.connect(lp2);
 
     const muLawShaper = ctx.createWaveShaper();
@@ -91,9 +87,7 @@ export class TelephoneLineFilter implements AudioFilter {
 }
 
 /**
- * Speaker Emulation Filter.
- * Cuts bass aggressively below 50Hz, creates a sharp acoustic resonance peak at 1.5kHz,
- * and rolls off high-frequency digital harshness over 5kHz.
+ * Piezo Speaker Emulation Filter.
  */
 export class SpeakerFilter implements AudioFilter {
   public input: GainNode;
@@ -103,33 +97,61 @@ export class SpeakerFilter implements AudioFilter {
     this.input = ctx.createGain();
     this.output = ctx.createGain();
 
-    // Aggressive low-end roll-off
-    const hp = ctx.createBiquadFilter();
-    hp.type = "highpass";
-    hp.frequency.value = 100;
-    hp.Q.value = magnitudeToDb(0.7071);
-    this.input.connect(hp);
-    const hp2 = ctx.createBiquadFilter();
-    hp2.type = "highpass";
-    hp2.frequency.value = 800;
-    hp2.Q.value = magnitudeToDb(0.75);
-    hp.connect(hp2);
+    const cutoff = ctx.createBiquadFilter();
+    cutoff.type = "highpass";
+    cutoff.frequency.value = 50;
+    cutoff.Q.value = magnitudeToDb(0.7071);
+    this.input.connect(cutoff);
 
-    // Midrange resonant peak
-    const peaking = ctx.createBiquadFilter();
-    peaking.type = "peaking";
-    peaking.frequency.value = 1500;
-    peaking.Q.value = magnitudeToDb(1.3);
-    peaking.gain.value = 4;
-    hp2.connect(peaking);
+    const lowShelf = ctx.createBiquadFilter();
+    lowShelf.type = "lowshelf";
+    lowShelf.frequency.value = 120;
+    lowShelf.gain.value = -24;
+    cutoff.connect(lowShelf);
 
-    // More gentle high-frequency roll-off
+    const midDip = ctx.createBiquadFilter();
+    midDip.type = "peaking";
+    midDip.frequency.value = 250;
+    midDip.Q.value = 0.85; //1.2;
+    midDip.gain.value = -14;
+    lowShelf.connect(midDip);
+
+    const midBoost = ctx.createBiquadFilter();
+    midBoost.type = "peaking";
+    midBoost.frequency.value = 900;
+    midBoost.Q.value = 0.9;
+    midBoost.gain.value = -8;
+    midDip.connect(midBoost);
+
+    const upperDip = ctx.createBiquadFilter();
+    upperDip.type = "peaking";
+    upperDip.frequency.value = 6000;
+    upperDip.Q.value = 0.9;
+    upperDip.gain.value = -12;
+    midBoost.connect(upperDip);
+
+    const highShelf = ctx.createBiquadFilter();
+    highShelf.type = "highshelf";
+    highShelf.frequency.value = 11000;
+    highShelf.gain.value = 4;
+    upperDip.connect(highShelf);
+
+    const topBoost = ctx.createBiquadFilter();
+    topBoost.type = "peaking";
+    topBoost.frequency.value = 15000;
+    topBoost.Q.value = 0.8;
+    topBoost.gain.value = 4;
+    highShelf.connect(topBoost);
+
     const lp = ctx.createBiquadFilter();
     lp.type = "lowpass";
-    lp.frequency.value = 10000;
+    lp.frequency.value = 24000;
     lp.Q.value = magnitudeToDb(0.7071);
-    peaking.connect(lp);
-    lp.connect(this.output);
+    topBoost.connect(lp);
+
+    const distortion = new SoftSaturationShaper(ctx, 0.35);
+    lp.connect(distortion.input);
+    distortion.output.connect(this.output);
   }
 }
 
@@ -178,33 +200,11 @@ export class SoftSaturationShaper implements AudioFilter {
       curve[i] = Math.tanh(x * drive) / denominator;
     }
     this.shaper.curve = curve;
-    this.shaper.oversample = "2x";
+    this.shaper.oversample = "4x";
 
     // Apply drive and normalize output level
     this.driveGain.gain.setValueAtTime(drive, ctx.currentTime);
     this.normGain.gain.setValueAtTime(1 / drive, ctx.currentTime);
-  }
-}
-
-export class FullModemFilter implements AudioFilter {
-  public input: GainNode;
-  public output: GainNode;
-
-  constructor(ctx: BaseAudioContext) {
-    this.input = ctx.createGain();
-    this.output = ctx.createGain();
-    this.input.gain.value = 1.0;
-    this.output.gain.value = 1.0;
-
-    const speakerFilter = new SpeakerFilter(ctx);
-    const phoneFilter = new TelephoneLineFilter(ctx);
-    //const saturationFilter = new SoftSaturationShaper(ctx, 0.75);
-
-    //this.input.connect(saturationFilter.input);
-    //saturationFilter.output.connect(phoneFilter.input);
-    this.input.connect(phoneFilter.input);
-    phoneFilter.output.connect(speakerFilter.input);
-    speakerFilter.output.connect(this.output);
   }
 }
 

@@ -1,7 +1,5 @@
 import FFT from "fft.js";
 
-import { magnitudeToDb } from "./filters";
-
 export interface FrequencyScale {
   readonly name: string;
   readonly minFreq: number;
@@ -77,10 +75,13 @@ export interface MagnitudeScale {
   readonly unit: string;
 
   /** Converts a linear FFT magnitude to a normalized Y ratio (0.0 = bottom, 1.0 = top) */
-  magnitudeToRatio(val: number): number;
+  magnitudeToRatio(value: number): number;
+
+  /** Converts a linear magnitude value to decibels */
+  magnitudeToDb(mag: number): number;
 
   /** Converts a specific scale value (like dB) to a normalized Y ratio */
-  valueToRatio(value: number): number;
+  dbToRatio(value: number): number;
 }
 
 export class DecibelScale implements MagnitudeScale {
@@ -95,13 +96,31 @@ export class DecibelScale implements MagnitudeScale {
     this.range = this.max - this.min;
   }
 
-  public magnitudeToRatio(val: number): number {
-    const db = magnitudeToDb(val || 1e-10); // Prevent log(0)
-    return this.valueToRatio(db);
+  /**
+   * Converts a linear FFT magnitude to a normalized ratio.
+   * @param value The linear magnitude value to convert.
+   * @returns The corresponding normalized ratio between 0 and 1.
+   */
+  public magnitudeToRatio(value: number): number {
+    const db = this.magnitudeToDb(value || 1e-10); // Prevent log(0)
+    return this.dbToRatio(db);
   }
 
-  public valueToRatio(db: number): number {
-    // Returns 0.0 at min dB, and 1.0 at max dB
+  /**
+   * Converts a linear magnitude value to decibels.
+   * @param mag The linear magnitude value to convert.
+   * @returns The corresponding magnitude value in decibels.
+   */
+  public magnitudeToDb(mag: number): number {
+    return 20 * Math.log10(mag);
+  }
+
+  /**
+   * Converts a specific dB scale value to a normalized ratio.
+   * @param db The value in decibels to convert.
+   * @returns The corresponding normalized ratio between 0 and 1.
+   */
+  public dbToRatio(db: number): number {
     return (db - this.min) / this.range;
   }
 }
@@ -117,11 +136,12 @@ export class ModemResponseCanvas {
     private height: number = canvas.height,
     freqScale?: FrequencyScale,
     magScale?: MagnitudeScale,
+    private title: string = "Frequency Response",
   ) {
     this.ctx = canvas.getContext("2d")!;
     this.freqScale = freqScale ?? new MelScale(10, 10000);
     // You can now easily swap these limits at instantiation!
-    this.magScale = magScale ?? new DecibelScale(-60, 10, 10);
+    this.magScale = magScale ?? new DecibelScale(-60, 20, 10);
   }
 
   public draw(analysis: AnalysisResult): void {
@@ -158,7 +178,6 @@ export class ModemResponseCanvas {
       let y: number;
 
       if (type === "magnitude") {
-        // The Y-axis abstraction replaces the hardcoded dB math
         const ratioY = this.magScale.magnitudeToRatio(val);
         // Canvas Y is inverted (0 is top), so we do 1 - ratio
         y = this.height * (1 - ratioY);
@@ -188,7 +207,7 @@ export class ModemResponseCanvas {
     // 1. Draw horizontal magnitude grid lines & labels (Left Side)
     ctx.textBaseline = "middle";
     for (let val = magScale.min; val <= magScale.max; val += magScale.step) {
-      const ratioY = magScale.valueToRatio(val);
+      const ratioY = magScale.dbToRatio(val);
       const y = height * (1 - ratioY);
 
       if (y < 0 || y > height) continue;
@@ -278,7 +297,8 @@ export class ModemResponseCanvas {
     ctx.textAlign = "center";
     ctx.textBaseline = "top";
     ctx.fillStyle = "#fff";
-    ctx.fillText(`Frequency (Hz) [${freqScale.name}]`, width / 2, 5);
+    ctx.fillText(this.title, width / 2, 5);
+    ctx.fillText(`Frequency (Hz) [${freqScale.name}]`, width / 2, 22);
   }
 }
 

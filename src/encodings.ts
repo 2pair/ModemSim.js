@@ -74,7 +74,7 @@ function prepareBitStream(
  * @returns The stop time of the oscillator
  */
 export function encodeFSK(
-  ctx: AudioContext,
+  ctx: BaseAudioContext,
   outputNode: AudioNode,
   dataBits: Bit[],
   spaceFreq: Frequency,
@@ -137,7 +137,7 @@ export function encodeFSK(
  * @returns The stop time of the transmission
  */
 export function encodeDPSK(
-  ctx: AudioContext,
+  ctx: BaseAudioContext,
   outputNode: AudioNode,
   dataBits: Bit[],
   carrierFreq: Frequency,
@@ -236,7 +236,7 @@ function mapBitsToIQ(
  * @returns void
  */
 const createCarrierBranch = (
-  ctx: AudioContext,
+  ctx: BaseAudioContext,
   outputNode: AudioNode,
   amplitudes: number[],
   waveType: WaveType,
@@ -293,7 +293,7 @@ const createCarrierBranch = (
  * @returns The stop time of the transmission
  */
 export function encodeQAM16(
-  ctx: AudioContext,
+  ctx: BaseAudioContext,
   outputNode: AudioNode,
   dataBits: Bit[],
   carrierFreq: Frequency,
